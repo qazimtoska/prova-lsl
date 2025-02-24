@@ -28,11 +28,12 @@ def main(argv):
 
     edf_files = mne.datasets.eegbci.load_data(1, [4]) # soggetto 1, run 4
     raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
+    events, _ = mne.events_from_annotations(raw, verbose=False)
+    events = events[:, 0][1:]
+
     raw_matrix = raw.get_data()
     # segment = [inner_list[592:1314] for inner_list in raw_matrix]
-    print(time.time())
     segment = [inner_list[1248:1969] for inner_list in raw_matrix]
-    print(time.time())
 
     try:
         opts, args = getopt.getopt(argv, "hs:c:n:t:", longopts=["srate=", "channels=", "name=", "type"])
@@ -66,13 +67,18 @@ def main(argv):
     start_time = local_clock()
     sent_samples = 0
 
+    while not outlet.have_consumers():
+        print("Waiting for consumers...")
+        time.sleep(1)
+
+    segment_number = 0
     while True:
-        time.sleep(5)
+        segment = [inner_list[(events[segment_number] - 80):(events[segment_number] + 641)] for inner_list in raw_matrix]
         for col_index in range(721):
             column = [row[col_index] for row in segment]
             outlet.push_sample(column)
             time.sleep(0.00625)
-        break
+        segment_number += 1
 
 if __name__ == '__main__':
     main(sys.argv[1:])

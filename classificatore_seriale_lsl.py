@@ -100,7 +100,7 @@ class PhysioNet3ClassDataset(Dataset):
 
         # Trova gli eventi (annotazioni)
         events, event_id_dict = mne.events_from_annotations(self.raw, verbose=False)
-        print(events)
+        print(events[:, 0][1:])
         # Manteniamo solo i 3 tipi di evento che ci interessano
         desired_ids = dict(T0=1, T1=2, T2=3)
 

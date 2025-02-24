@@ -50,6 +50,7 @@ def inference(receiving_matrix, info):
             logits = model_inference(xb)
             _, preds = logits.max(dim=1)
             print("Predizione:", preds.numpy())
+            # print("Timestamp predizione:", time.time())
 
 def main():
     edf_files = mne.datasets.eegbci.load_data(1, [4])
@@ -69,13 +70,14 @@ def main():
 
     while True:
         sample, timestamp = inlet.pull_sample()
-        print(timestamp)
         for row, value in zip(receiving_matrix, sample):
             row.append(value)
-        if (len(receiving_matrix[0]) == 721):
+        if (len(receiving_matrix[0]) % 721 == 0):
+            # print("Timestamp fine ricezione:", time.time())
             x = threading.Thread(target=inference, args=(receiving_matrix,info,))
             threads.append(x)
             x.start()
+            receiving_matrix = [[] for _ in range(64)]
     
     for _, thread in enumerate(threads):
         thread.join()
