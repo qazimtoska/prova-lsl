@@ -67,7 +67,7 @@ def main(argv):
     sent_samples = 0
 
     while True:
-        time.sleep(10)
+        time.sleep(5)
         for col_index in range(721):
             column = [row[col_index] for row in segment]
             outlet.push_sample(column)
