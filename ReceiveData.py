@@ -12,7 +12,10 @@ from models import EEGSegment, MultiStream1DCNN
 
 import threading
 
+import paho.mqtt.client as mqtt
+
 from periphery import Serial
+
 uart1 = Serial("/dev/ttymxc0", 115200)
 
 # Comandi da inviare all'ESP32
@@ -22,6 +25,17 @@ LEFT = "AT+LEFT={}\n"
 RIGHT = "AT+RIGHT={}\n"
 STOP = "AT+STOP={}\n"
 
+# Parametri di connessione al broker MQTT
+broker_address = "test.mosquitto.org"  
+broker_port = 1883  
+username = ""  
+password = ""
+
+client = mqtt.Client()
+topic = "edf_files"
+qos_level = 0
+keep_alive_interval = 60
+
 # Esempio: usiamo il modello allenato del fold 1
 in_channels = 64
 device = "cpu"
@@ -30,7 +44,7 @@ model_inference.load_state_dict(torch.load("model_fold_1.pth", map_location=devi
 model_inference.eval()
 
 def inference(receiving_matrix, info):
-    def send_command_through_serial(prediction):
+    def send_commands(prediction):
         if prediction == 0:
             command = STOP.format(127)
         elif prediction == 1:
@@ -41,7 +55,13 @@ def inference(receiving_matrix, info):
             command = FORWARD.format(127)
         else:
             command = BACK.format(127)
+
+        # Scrittura comando tramite seriale
         uart1.write(command.encode('utf-8'))
+        
+        # Invio comando con MQTT
+        result = client.publish(topic, command)
+        result.wait_for_publish()
     
     receiving_matrix = np.array(receiving_matrix)
 
@@ -71,12 +91,18 @@ def inference(receiving_matrix, info):
             _, preds = logits.max(dim=1)
             print("Predizione:", preds.numpy()[0])
             # print("Timestamp predizione:", time.time())
-            send_command_through_serial(preds.numpy()[0])
+            send_commands(preds.numpy()[0])
 
 def main():
+    # Caricamento file edf
     edf_files = mne.datasets.eegbci.load_data(1, [4])
     raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
     info = raw.info
+
+    # Connessione al broker MQTT
+    client.connect(broker_address, broker_port, keepalive=keep_alive_interval)
+    client.loop_start()
+    client.default_qos = qos_level
 
     # first resolve an EEG stream on the lab network
     print("Looking for an EEG stream...")
