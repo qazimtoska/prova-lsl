@@ -12,18 +12,38 @@ from models import EEGSegment, MultiStream1DCNN
 
 import threading
 
-# Inizio parte relativa al Modello
-in_channels = 64
-device = "cpu"
+from periphery import Serial
+uart1 = Serial("/dev/ttymxc0", 115200)
+
+# Comandi da inviare all'ESP32
+FORWARD = "AT+FORWARD={}\n"
+BACK = "AT+BACK={}\n"
+LEFT = "AT+LEFT={}\n"
+RIGHT = "AT+RIGHT={}\n"
+STOP = "AT+STOP={}\n"
 
 # Esempio: usiamo il modello allenato del fold 1
+in_channels = 64
+device = "cpu"
 model_inference = MultiStream1DCNN(in_channels=in_channels, n_classes=3).to(device)
 model_inference.load_state_dict(torch.load("model_fold_1.pth", map_location=device))
 model_inference.eval()
 
 def inference(receiving_matrix, info):
+    def send_command_through_serial(prediction):
+        if prediction == 0:
+            command = STOP.format(127)
+        elif prediction == 1:
+            command = LEFT.format(127)
+        elif prediction == 2:
+            command = RIGHT.format(127)
+        elif prediction == 3:
+            command = FORWARD.format(127)
+        else:
+            command = BACK.format(127)
+        uart1.write(command.encode('utf-8'))
+    
     receiving_matrix = np.array(receiving_matrix)
-    print(receiving_matrix[0][0])
 
     segmentoRaw = mne.io.RawArray(receiving_matrix, info)
     segmentoRaw.pick("eeg", exclude='bads') 
@@ -49,8 +69,9 @@ def inference(receiving_matrix, info):
             xb = xb.to(device)
             logits = model_inference(xb)
             _, preds = logits.max(dim=1)
-            print("Predizione:", preds.numpy())
+            print("Predizione:", preds.numpy()[0])
             # print("Timestamp predizione:", time.time())
+            send_command_through_serial(preds.numpy()[0])
 
 def main():
     edf_files = mne.datasets.eegbci.load_data(1, [4])
