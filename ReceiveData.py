@@ -26,7 +26,7 @@ RIGHT = "AT+RIGHT={}\n"
 STOP = "AT+STOP={}\n"
 
 # Parametri di connessione al broker MQTT
-broker_address = "test.mosquitto.org"  
+broker_address = "broker.emqx.io"  
 broker_port = 1883  
 username = ""  
 password = ""
@@ -44,7 +44,7 @@ model_inference.load_state_dict(torch.load("model_fold_1.pth", map_location=devi
 model_inference.eval()
 
 def inference(receiving_matrix, info):
-    def send_commands(prediction):
+    def send_command(prediction):
         if prediction == 0:
             command = STOP.format(127)
         elif prediction == 1:
@@ -66,7 +66,7 @@ def inference(receiving_matrix, info):
     receiving_matrix = np.array(receiving_matrix)
 
     segmentoRaw = mne.io.RawArray(receiving_matrix, info)
-    segmentoRaw.pick("eeg", exclude='bads') 
+    segmentoRaw = segmentoRaw.pick("eeg", exclude='bads') 
 
     epochs = mne.Epochs(
         segmentoRaw,
@@ -90,8 +90,7 @@ def inference(receiving_matrix, info):
             logits = model_inference(xb)
             _, preds = logits.max(dim=1)
             print("Predizione:", preds.numpy()[0])
-            # print("Timestamp predizione:", time.time())
-            send_commands(preds.numpy()[0])
+            send_command(preds.numpy()[0])
 
 def main():
     # Caricamento file edf
@@ -120,7 +119,6 @@ def main():
         for row, value in zip(receiving_matrix, sample):
             row.append(value)
         if (len(receiving_matrix[0]) % 721 == 0):
-            # print("Timestamp fine ricezione:", time.time())
             x = threading.Thread(target=inference, args=(receiving_matrix,info,))
             threads.append(x)
             x.start()
