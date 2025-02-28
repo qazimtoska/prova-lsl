@@ -32,8 +32,7 @@ def main(argv):
     events = events[:, 0][1:]
 
     raw_matrix = raw.get_data()
-    # segment = [inner_list[592:1314] for inner_list in raw_matrix]
-    segment = [inner_list[1248:1969] for inner_list in raw_matrix]
+    signal_length = len(raw_matrix[0])
 
     try:
         opts, args = getopt.getopt(argv, "hs:c:n:t:", longopts=["srate=", "channels=", "name=", "type"])
@@ -71,14 +70,11 @@ def main(argv):
         print("Waiting for consumers...")
         time.sleep(1)
 
-    segment_number = 0
     while True:
-        segment = [inner_list[(events[segment_number] - 80):(events[segment_number] + 641)] for inner_list in raw_matrix]
-        for col_index in range(721):
-            column = [row[col_index] for row in segment]
+        for col_index in range(signal_length):
+            column = [row[col_index] for row in raw_matrix]
             outlet.push_sample(column)
             time.sleep(0.00625)
-        segment_number += 1
 
 if __name__ == '__main__':
     main(sys.argv[1:])

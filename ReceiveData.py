@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from models import EEGSegment, MultiStream1DCNN
 
 import threading
-
+"""
 import paho.mqtt.client as mqtt
 
 from periphery import Serial
@@ -35,7 +35,7 @@ client = mqtt.Client()
 topic = "edf_files"
 qos_level = 0
 keep_alive_interval = 60
-
+"""
 # Esempio: usiamo il modello allenato del fold 1
 in_channels = 64
 device = "cpu"
@@ -43,7 +43,10 @@ model_inference = MultiStream1DCNN(in_channels=in_channels, n_classes=3).to(devi
 model_inference.load_state_dict(torch.load("model_fold_1.pth", map_location=device))
 model_inference.eval()
 
+mne.set_log_level('WARNING')
+
 def inference(receiving_matrix, info):
+    """
     def send_command(prediction):
         if prediction == 0:
             command = STOP.format(127)
@@ -62,8 +65,11 @@ def inference(receiving_matrix, info):
         # Invio comando con MQTT
         result = client.publish(topic, command)
         result.wait_for_publish()
+    """
     
-    receiving_matrix = np.array(receiving_matrix)
+    start_time = time.time()
+    receiving_matrix = receiving_matrix[:, :721]
+    print(receiving_matrix.shape)
 
     segmentoRaw = mne.io.RawArray(receiving_matrix, info)
     segmentoRaw = segmentoRaw.pick("eeg", exclude='bads') 
@@ -90,40 +96,51 @@ def inference(receiving_matrix, info):
             logits = model_inference(xb)
             _, preds = logits.max(dim=1)
             print("Predizione:", preds.numpy()[0])
-            send_command(preds.numpy()[0])
+            # send_command(preds.numpy()[0])
+    print("Delta:", time.time() - start_time)
 
 def main():
     # Caricamento file edf
     edf_files = mne.datasets.eegbci.load_data(1, [4])
     raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
     info = raw.info
-
+    """
     # Connessione al broker MQTT
     client.connect(broker_address, broker_port, keepalive=keep_alive_interval)
     client.loop_start()
     client.default_qos = qos_level
-
+    """
     # first resolve an EEG stream on the lab network
     print("Looking for an EEG stream...")
     streams = resolve_stream('type', 'EEG')
 
-    receiving_matrix = [[] for _ in range(64)]
+    receiving_matrix = np.empty((64, 0))
 
     # create a new inlet to read from the stream
     inlet = StreamInlet(streams[0])
 
     threads = []
-
+    
     while True:
         sample, timestamp = inlet.pull_sample()
-        for row, value in zip(receiving_matrix, sample):
-            row.append(value)
-        if (len(receiving_matrix[0]) % 721 == 0):
-            x = threading.Thread(target=inference, args=(receiving_matrix,info,))
-            threads.append(x)
-            x.start()
-            receiving_matrix = [[] for _ in range(64)]
-    
+        sample_column = np.array(sample).reshape(64, 1)
+        receiving_matrix = np.hstack((receiving_matrix, sample_column))
+
+        if (len(receiving_matrix[0]) % 800 == 0): # prendo i primi 5 secondi
+            break
+
+    while True:
+        x = threading.Thread(target=inference, args=(receiving_matrix,info,))
+        threads.append(x)
+        x.start()
+
+        # 48 samples corrispondono a 0.3 secondi di segnale
+        for _ in range(48):
+            sample, timestamp = inlet.pull_sample()
+            sample_column = np.array(sample).reshape(64, 1)
+            receiving_matrix = np.hstack((receiving_matrix, sample_column))
+            receiving_matrix = receiving_matrix[:, 1:]
+
     for _, thread in enumerate(threads):
         thread.join()
 
