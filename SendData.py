@@ -1,14 +1,6 @@
 """Example program to demonstrate how to send a multi-channel time series to
 LSL."""
 
-"""
-Per capire come inviare il segmento:
-1. La prima riga utile negli eventi non è la 0, ma la 1 poichè la riga 0 parte dal campione 0 e non si può andare indietro di 0.5 secondi
-2. Quando individuo una riga, il range lo ottengo facendo[(num_campione - 80) ; (num_campione + 640 + 1)]
-   Note: 80 lo ottengo come 160 * 0.5 secondi
-         640 lo ottengo come 160 * 4
-         L'1 consente di prendere in totale 721 campioni e non 720 (come vuole mne)
-"""
 import sys
 import getopt
 
@@ -20,19 +12,13 @@ from pylsl import StreamInfo, StreamOutlet, local_clock
 import mne
 
 def main(argv):
+    # Costanti e inizializzazione LSL
+    
     srate = 160
     name = 'BioSemi'
     type = 'EEG'
     n_channels = 64
     help_string = 'SendData.py -s <sampling_rate> -n <stream_name> -t <stream_type>'
-
-    edf_files = mne.datasets.eegbci.load_data(1, [4]) # soggetto 1, run 4
-    raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
-    events, _ = mne.events_from_annotations(raw, verbose=False)
-    events = events[:, 0][1:]
-
-    raw_matrix = raw.get_data()
-    signal_length = len(raw_matrix[0])
 
     try:
         opts, args = getopt.getopt(argv, "hs:c:n:t:", longopts=["srate=", "channels=", "name=", "type"])
@@ -62,9 +48,21 @@ def main(argv):
     # next make an outlet
     outlet = StreamOutlet(info)
 
+    # Apertura file di registrazione
+
+    # edf_files contiene i path delle registrazioni, in questo caso solo una
+    edf_files = mne.datasets.eegbci.load_data(1, [4]) # soggetto 1, run 4
+    
+    # raw è un'istanza di RawEDF, e viene creato a partire dalla registrazione scelta al passo precedente
+    raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
+
+    # raw_matrix contiene i dati della registrazione sotto forma di matrice (n_channels X n_total_samples)
+    raw_matrix = raw.get_data()
+
+    # signal_length rappresenta la lunghezza del segnale, in termini di campioni 
+    signal_length = len(raw_matrix[0])
+
     print("now sending data...")
-    start_time = local_clock()
-    sent_samples = 0
 
     while not outlet.have_consumers():
         print("Waiting for consumers...")
@@ -72,9 +70,10 @@ def main(argv):
 
     while True:
         for col_index in range(signal_length):
+            # invio una colonna alla volta della matrice raw_matrix
             column = [row[col_index] for row in raw_matrix]
             outlet.push_sample(column)
-            time.sleep(0.00625)
+            time.sleep(0.00625) # simulo un campionamento a 160 Hz -> 1/160 = 0.00625 secondi
 
 if __name__ == '__main__':
     main(sys.argv[1:])

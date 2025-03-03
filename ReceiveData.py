@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from models import EEGSegment, MultiStream1DCNN
 
 import threading
+from collections import Counter, deque
 """
 import paho.mqtt.client as mqtt
 
@@ -45,7 +46,39 @@ model_inference.eval()
 
 mne.set_log_level('WARNING')
 
-def inference(receiving_matrix, info):
+# Oggetto Condition() che mi serve per regolare le scritture/letture di predictions tramite 
+# acquisizione e rilascio di un Lock
+condition = threading.Condition()
+
+# Coda di dimensione fissa (scorrevole) che contiene le label prodotte dai thread di inferenza
+predictions = deque(maxlen=5)
+
+def majority_voting():
+    """
+    Il thread majority_voting è costantemente in uno stato di wait, ad eccezione di quando viene 
+    risvegliato da un thread inference (dopo aver prodotto una label). In quest'ultima circostanza
+    fa voto maggioritario fra le label presenti in predictions
+    """
+
+    while True:
+        with condition:
+            condition.wait()
+
+            print("Prediction list:", predictions)
+            """
+            if len(predictions) == 5:
+                counts = Counter(predictions)
+                most_common = counts.most_common()
+
+                if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
+                    print("Prediction:", 0)
+                else:
+                    print("Prediction:", most_common[0][0])
+            else:
+                print("There is/are only", len(predictions), "predictions. Wait")
+            """
+
+def inference(data_matrix, info):
     """
     def send_command(prediction):
         if prediction == 0:
@@ -67,15 +100,22 @@ def inference(receiving_matrix, info):
         result.wait_for_publish()
     """
     
-    start_time = time.time()
-    receiving_matrix = receiving_matrix[:, :721]
-    print(receiving_matrix.shape)
+    # start_time = time.time()
+    
+    # Il modello deve selezionare i 4.5 secondi più recenti dalla finestra di 5 secondi.
+    # Ecco perché taglio la matrice, facendola partire dalla colonna 79 (non 80 poiché 
+    # mne vuole un segmento da 4.5 secondi + 1 ulteriore campione => 721 campioni)
+    data_matrix = data_matrix[:, 79:]
 
-    segmentoRaw = mne.io.RawArray(receiving_matrix, info)
+    # A partire da data_matrix costruisco un oggetto dal quale poter creare successivamente 
+    # la singola epoca
+    segmentoRaw = mne.io.RawArray(data_matrix, info)
     segmentoRaw = segmentoRaw.pick("eeg", exclude='bads') 
 
     epochs = mne.Epochs(
         segmentoRaw,
+        # La colonna 0 specifica da quale sample parte il segmento, la 2 indica una predizione falsa
+        # per questo segmento (necessario). La 1 non è importante
         np.array([[0, 0, 1]]),
         tmin=0.0,
         tmax=4.5,
@@ -90,17 +130,22 @@ def inference(receiving_matrix, info):
     example_segment = EEGSegment(data_tensor)
     example_loader = DataLoader(example_segment, batch_size=1, shuffle=False)
 
+    # Predizione
     with torch.no_grad():
         for xb, yb in example_loader:
             xb = xb.to(device)
             logits = model_inference(xb)
             _, preds = logits.max(dim=1)
-            print("Predizione:", preds.numpy()[0])
+            # print("Delta:", time.time() - start_time)
+            # print("Predizione:", preds.numpy()[0])
+            with condition:
+                predictions.append(preds.numpy()[0])
+                condition.notify()
             # send_command(preds.numpy()[0])
-    print("Delta:", time.time() - start_time)
 
 def main():
-    # Caricamento file edf
+    # Caricamento file edf solo per produrre l'oggetto di informazioni necessario a ricostruire
+    # i vari segmenti
     edf_files = mne.datasets.eegbci.load_data(1, [4])
     raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
     info = raw.info
@@ -114,33 +159,58 @@ def main():
     print("Looking for an EEG stream...")
     streams = resolve_stream('type', 'EEG')
 
-    receiving_matrix = np.empty((64, 0))
+    """
+    data_matrix è una matrice (n_channels X n_samples), dove n_samples indica la lunghezza 
+    della finestra. Vogliamo che la finestra sia costantemente di 5 secondi, ma anche che sia
+    scorrevole, dunque che i vecchi dati lascino posto ai nuovi, che verranno inseriti alla fine.
+
+    data_matrix è paragonabile a raw_matrix nel file SendData.py, ma differisce nel numero di colonne.
+    Difatti data_matrix contiene i dati di un singolo segmento temporale, di cui faremo inferenza, non 
+    dell'intera registrazione
+
+    Inizialmente non ci sono dati per ciascuno dei 64 canali
+    """
+    data_matrix = np.empty((64, 0))
 
     # create a new inlet to read from the stream
     inlet = StreamInlet(streams[0])
 
+    # Lista che mi consente di fare il join dei thread inference
     threads = []
     
-    while True:
-        sample, timestamp = inlet.pull_sample()
-        sample_column = np.array(sample).reshape(64, 1)
-        receiving_matrix = np.hstack((receiving_matrix, sample_column))
+    votingThread = threading.Thread(target=majority_voting)
+    votingThread.start()
 
-        if (len(receiving_matrix[0]) % 800 == 0): # prendo i primi 5 secondi
+    # Mediante questo ciclo raccolgo i primi 5 secondi di segnale
+    while True:
+        sample, _ = inlet.pull_sample() # sample = campione per ciascuno dei 64 canali
+        sample_column = np.array(sample).reshape(64, 1)
+
+        # aggiungo la colonna ottenuta in fondo alla matrice data_matrix
+        data_matrix = np.hstack((data_matrix, sample_column))
+
+        if (len(data_matrix[0]) % 800 == 0): # 800 => 800 * 0.00625 = 5 secondi
             break
 
+    # Mediante questo ciclo raccolgo costantemente nuovi campioni e ogni 0.3 secondi faccio inferenza
     while True:
-        x = threading.Thread(target=inference, args=(receiving_matrix,info,))
+        x = threading.Thread(target=inference, args=(data_matrix,info,))
         threads.append(x)
         x.start()
 
         # 48 samples corrispondono a 0.3 secondi di segnale
         for _ in range(48):
-            sample, timestamp = inlet.pull_sample()
+            sample, _ = inlet.pull_sample()
             sample_column = np.array(sample).reshape(64, 1)
-            receiving_matrix = np.hstack((receiving_matrix, sample_column))
-            receiving_matrix = receiving_matrix[:, 1:]
+            data_matrix = np.hstack((data_matrix, sample_column))
 
+            # Ogni campione ricevuto viene incolonnato alla fine di data_matrix, e per mantenere
+            # la stessa dimensione del segmento (5 secondi) la prima colonna (0) viene rimossa.
+            # Dunque data_matrix è una matrice scorrevole
+            data_matrix = data_matrix[:, 1:]
+
+    # Se il programma viene interrotto dall'utente si attende che tutte le predizioni siano 
+    # state effettuate
     for _, thread in enumerate(threads):
         thread.join()
 
