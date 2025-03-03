@@ -4,6 +4,7 @@ from pylsl import StreamInlet, resolve_stream
 
 import time
 import numpy as np
+from enum import Enum
 
 import mne
 import torch
@@ -53,6 +54,16 @@ condition = threading.Condition()
 # Coda di dimensione fissa (scorrevole) che contiene le label prodotte dai thread di inferenza
 predictions = deque(maxlen=5)
 
+# Ultima predizione
+last_prediction = None
+
+class Prediction(Enum):
+    STOP = 0
+    LEFT = 1
+    RIGHT = 2
+    FORWARD = 3
+    BACK = 4
+
 def majority_voting():
     """
     Il thread majority_voting è costantemente in uno stato di wait, ad eccezione di quando viene 
@@ -65,29 +76,45 @@ def majority_voting():
             condition.wait()
 
             print("Prediction list:", predictions)
-            """
-            if len(predictions) == 5:
-                counts = Counter(predictions)
-                most_common = counts.most_common()
 
-                if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
-                    print("Prediction:", 0)
+            counts = Counter(predictions)
+            most_common = counts.most_common()
+
+            if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
+                most_common_list = [mc[0] for mc in most_common]
+                
+                if last_prediction in most_common_list:
+                    # Se l'ultima predizione è una delle predizioni più comuni in predictions attualmente,
+                    # la predizione corrente è uguale all'ultima predizione
+                    prediction = last_prediction
                 else:
-                    print("Prediction:", most_common[0][0])
+                    # Ordine di priorità
+                    if Prediction.STOP.value in most_common_list:
+                        prediction = Prediction.STOP.value
+                    elif Prediction.FORWARD.value in most_common_list:
+                        prediction = Prediction.FORWARD.value
+                    elif Prediction.RIGHT.value in most_common_list:
+                        prediction = Prediction.RIGHT.value
+                    elif Prediction.LEFT.value in most_common_list:
+                        prediction = Prediction.LEFT.value
+                    else:
+                        prediction = Prediction.BACK.value
+
             else:
-                print("There is/are only", len(predictions), "predictions. Wait")
-            """
+                prediction = most_common[0][0]
+
+            last_prediction = prediction
 
 def inference(data_matrix, info):
     """
     def send_command(prediction):
-        if prediction == 0:
+        if prediction == Prediction.STOP.value:
             command = STOP.format(127)
-        elif prediction == 1:
+        elif prediction == Prediction.LEFT.value:
             command = LEFT.format(127)
-        elif prediction == 2:
+        elif prediction == Prediction.RIGHT.value:
             command = RIGHT.format(127)
-        elif prediction == 3:
+        elif prediction == Prediction.FORWARD.value:
             command = FORWARD.format(127)
         else:
             command = BACK.format(127)
