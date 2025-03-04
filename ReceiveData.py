@@ -13,7 +13,7 @@ from models import EEGSegment, MultiStream1DCNN
 
 import threading
 from collections import Counter, deque
-"""
+
 import paho.mqtt.client as mqtt
 
 from periphery import Serial
@@ -37,7 +37,7 @@ client = mqtt.Client()
 topic = "edf_files"
 qos_level = 0
 keep_alive_interval = 60
-"""
+
 # Esempio: usiamo il modello allenato del fold 1
 in_channels = 64
 device = "cpu"
@@ -71,11 +71,28 @@ def majority_voting():
     fa voto maggioritario fra le label presenti in predictions
     """
 
+    def send_command(prediction):
+        if prediction == Prediction.STOP.value:
+            command = STOP.format(127)
+        elif prediction == Prediction.LEFT.value:
+            command = LEFT.format(127)
+        elif prediction == Prediction.RIGHT.value:
+            command = RIGHT.format(127)
+        elif prediction == Prediction.FORWARD.value:
+            command = FORWARD.format(127)
+        else:
+            command = BACK.format(127)
+
+        # Scrittura comando tramite seriale
+        uart1.write(command.encode('utf-8'))
+        
+        # Invio comando con MQTT
+        result = client.publish(topic, command)
+        result.wait_for_publish()
+
     while True:
         with condition:
             condition.wait()
-
-            print("Prediction list:", predictions)
 
             counts = Counter(predictions)
             most_common = counts.most_common()
@@ -103,30 +120,12 @@ def majority_voting():
             else:
                 prediction = most_common[0][0]
 
+            print("Prediction", prediction)
+            send_command(prediction)
+
             last_prediction = prediction
 
 def inference(data_matrix, info):
-    """
-    def send_command(prediction):
-        if prediction == Prediction.STOP.value:
-            command = STOP.format(127)
-        elif prediction == Prediction.LEFT.value:
-            command = LEFT.format(127)
-        elif prediction == Prediction.RIGHT.value:
-            command = RIGHT.format(127)
-        elif prediction == Prediction.FORWARD.value:
-            command = FORWARD.format(127)
-        else:
-            command = BACK.format(127)
-
-        # Scrittura comando tramite seriale
-        uart1.write(command.encode('utf-8'))
-        
-        # Invio comando con MQTT
-        result = client.publish(topic, command)
-        result.wait_for_publish()
-    """
-    
     # start_time = time.time()
     
     # Il modello deve selezionare i 4.5 secondi più recenti dalla finestra di 5 secondi.
@@ -164,11 +163,9 @@ def inference(data_matrix, info):
             logits = model_inference(xb)
             _, preds = logits.max(dim=1)
             # print("Delta:", time.time() - start_time)
-            # print("Predizione:", preds.numpy()[0])
             with condition:
                 predictions.append(preds.numpy()[0])
                 condition.notify()
-            # send_command(preds.numpy()[0])
 
 def main():
     # Caricamento file edf solo per produrre l'oggetto di informazioni necessario a ricostruire
@@ -176,12 +173,12 @@ def main():
     edf_files = mne.datasets.eegbci.load_data(1, [4])
     raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
     info = raw.info
-    """
+
     # Connessione al broker MQTT
     client.connect(broker_address, broker_port, keepalive=keep_alive_interval)
     client.loop_start()
     client.default_qos = qos_level
-    """
+
     # first resolve an EEG stream on the lab network
     print("Looking for an EEG stream...")
     streams = resolve_stream('type', 'EEG')
