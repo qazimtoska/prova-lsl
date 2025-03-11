@@ -126,8 +126,7 @@ def majority_voting():
             last_prediction = prediction
 
 def inference(data_matrix, info):
-    # start_time = time.time()
-    
+        
     # Il modello deve selezionare i 4.5 secondi più recenti dalla finestra di 5 secondi.
     # Ecco perché taglio la matrice, facendola partire dalla colonna 79 (non 80 poiché 
     # mne vuole un segmento da 4.5 secondi + 1 ulteriore campione => 721 campioni)
@@ -162,7 +161,6 @@ def inference(data_matrix, info):
             xb = xb.to(device)
             logits = model_inference(xb)
             _, preds = logits.max(dim=1)
-            # print("Delta:", time.time() - start_time)
             with condition:
                 predictions.append(preds.numpy()[0])
                 condition.notify()
