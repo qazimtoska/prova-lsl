@@ -51,8 +51,7 @@ mne.set_log_level('WARNING')
 # acquisizione e rilascio di un Lock
 condition = threading.Condition()
 
-# Coda di dimensione fissa (scorrevole) che contiene le label prodotte dai thread di inferenza
-predictions = deque(maxlen=5)
+predictions_matrix = [deque(maxlen=5), deque(maxlen=5), deque(maxlen=5), deque(maxlen=5), deque(maxlen=5)]
 
 # Ultima predizione
 last_prediction = None
@@ -94,31 +93,27 @@ def majority_voting():
         with condition:
             condition.wait()
 
-            counts = Counter(predictions)
-            most_common = counts.most_common()
+            weight_sum = [sum(weight_queue) for weight_queue in predictions_matrix]
+            max_weight_sum = max(weight_sum)
+            max_indices = [index for index, value in enumerate(weight_sum) if value == max_weight_sum]
 
-            if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
-                most_common_list = [mc[0] for mc in most_common]
-                
-                if last_prediction in most_common_list:
-                    # Se l'ultima predizione è una delle predizioni più comuni in predictions attualmente,
-                    # la predizione corrente è uguale all'ultima predizione
-                    prediction = last_prediction
-                else:
+            if len(max_indices) > 1:
+                if not last_prediction:
                     # Ordine di priorità
-                    if Prediction.STOP.value in most_common_list:
+                    if Prediction.STOP.value in max_indices:
                         prediction = Prediction.STOP.value
-                    elif Prediction.FORWARD.value in most_common_list:
+                    elif Prediction.FORWARD.value in max_indices:
                         prediction = Prediction.FORWARD.value
-                    elif Prediction.RIGHT.value in most_common_list:
+                    elif Prediction.RIGHT.value in max_indices:
                         prediction = Prediction.RIGHT.value
-                    elif Prediction.LEFT.value in most_common_list:
+                    elif Prediction.LEFT.value in max_indices:
                         prediction = Prediction.LEFT.value
                     else:
                         prediction = Prediction.BACK.value
-
+                else:
+                    prediction = last_prediction
             else:
-                prediction = most_common[0][0]
+                prediction = max_indices[0]
 
             print("Prediction", prediction)
             send_command(prediction)
@@ -160,9 +155,16 @@ def inference(data_matrix, info):
         for xb, yb in example_loader:
             xb = xb.to(device)
             logits = model_inference(xb)
-            _, preds = logits.max(dim=1)
+            # weights rappresenta un vettore di pesi, i quali rappresentano
+            # quanto sia probabile che ciascuna label sia quella da produrre
+            # in output
+            weights = logits.tolist()[0]
             with condition:
-                predictions.append(preds.numpy()[0])
+                for i in range(3):
+                    predictions_matrix[i].append(weights[i])
+                predictions_matrix[3].append(0)
+                predictions_matrix[4].append(0)
+
                 condition.notify()
 
 def main():
