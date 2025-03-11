@@ -51,7 +51,10 @@ mne.set_log_level('WARNING')
 # acquisizione e rilascio di un Lock
 condition = threading.Condition()
 
-predictions_matrix = [deque(maxlen=5), deque(maxlen=5), deque(maxlen=5), deque(maxlen=5), deque(maxlen=5)]
+# Lista che contiene in ciascuna posizione una coda (scorrevole) di lunghezza max = 5.
+# Ciascuna coda rappresenta una label e ne contiene i pesi più recenti, prodotti dai
+# thread di inferenza.
+weights_matrix = [deque(maxlen=5), deque(maxlen=5), deque(maxlen=5), deque(maxlen=5), deque(maxlen=5)]
 
 # Ultima predizione
 last_prediction = None
@@ -93,13 +96,16 @@ def majority_voting():
         with condition:
             condition.wait()
 
-            weight_sum = [sum(weight_queue) for weight_queue in predictions_matrix]
+            # weight_sum = array che contiene in ciascuna posizione la somma
+            # dei pesi di ciascuna coda
+            weight_sum = [sum(weight_queue) for weight_queue in weights_matrix]
+
             max_weight_sum = max(weight_sum)
             max_indices = [index for index, value in enumerate(weight_sum) if value == max_weight_sum]
 
-            if len(max_indices) > 1:
+            if len(max_indices) > 1: # situazione di pareggio
                 if not last_prediction:
-                    # Ordine di priorità
+                    # Ordine di priorità nel caso in cui questa sia la prima predizione
                     if Prediction.STOP.value in max_indices:
                         prediction = Prediction.STOP.value
                     elif Prediction.FORWARD.value in max_indices:
@@ -111,6 +117,8 @@ def majority_voting():
                     else:
                         prediction = Prediction.BACK.value
                 else:
+                    # Se c'è un pareggio ma è stata già effettuata almeno una predizione,
+                    # allora predizione attuale = ultima predizione fatta
                     prediction = last_prediction
             else:
                 prediction = max_indices[0]
@@ -155,15 +163,15 @@ def inference(data_matrix, info):
         for xb, yb in example_loader:
             xb = xb.to(device)
             logits = model_inference(xb)
-            # weights rappresenta un vettore di pesi, i quali rappresentano
-            # quanto sia probabile che ciascuna label sia quella da produrre
-            # in output
+            # weights rappresenta un array di pesi, i quali rappresentano
+            # il grado di confidenza per ciascuna label
             weights = logits.tolist()[0]
             with condition:
+                # aggiorno la matrice di pesi con i nuovi pesi
                 for i in range(3):
-                    predictions_matrix[i].append(weights[i])
-                predictions_matrix[3].append(0)
-                predictions_matrix[4].append(0)
+                    weights_matrix[i].append(weights[i])
+                weights_matrix[3].append(0)
+                weights_matrix[4].append(0)
 
                 condition.notify()
 
