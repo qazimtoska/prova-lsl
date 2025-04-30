@@ -72,6 +72,7 @@ def majority_voting():
     risvegliato da un thread inference (dopo aver prodotto una label). In quest'ultima circostanza
     fa voto maggioritario fra le label presenti in predictions
     """
+    global last_prediction
 
     def send_command(prediction):
         if prediction == Prediction.STOP.value:
