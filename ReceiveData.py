@@ -136,7 +136,6 @@ def majority_voting():
             last_prediction = prediction
 
 def inference(data_matrix, info):
-        
     # Il modello deve selezionare i 4.5 secondi più recenti dalla finestra di 5 secondi.
     # Ecco perché taglio la matrice, facendola partire dalla colonna 79 (non 80 poiché 
     # mne vuole un segmento da 4.5 secondi + 1 ulteriore campione => 721 campioni)
@@ -160,7 +159,7 @@ def inference(data_matrix, info):
     )
 
     data = epochs.get_data() * 1e6
-
+    inizio = time.time()
     input_data = np.array(data, dtype=np.float32)
 
     interpreter.set_tensor(input_details[0]['index'], input_data)
