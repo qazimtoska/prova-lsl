@@ -7,7 +7,7 @@ import numpy as np
 from enum import Enum
 
 import mne
-import tensorflow as tf
+import tflite_runtime.interpreter as tflite
 
 import threading
 from collections import Counter, deque
@@ -37,7 +37,17 @@ qos_level = 0
 keep_alive_interval = 60
 
 # Modello TFLite
-interpreter = tf.lite.Interpreter(model_path="model_fold_1.tflite")
+try:
+    edgetpu_delegate = tflite.load_delegate('libedgetpu.so.1')
+    print("Using Edge TPU for inference.")
+    interpreter = tflite.Interpreter(
+        model_path="model_edgetpu.tflite",
+        experimental_delegates=[edgetpu_delegate]
+    )
+except Exception as e:
+    print("Edge TPU delegate not available, falling back to CPU.")
+    interpreter = tflite.Interpreter(model_path="model_edgetpu.tflite")
+
 interpreter.allocate_tensors()
 
 input_details = interpreter.get_input_details()
