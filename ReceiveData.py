@@ -7,9 +7,7 @@ import numpy as np
 from enum import Enum
 
 import mne
-import torch
-from torch.utils.data import DataLoader
-from models import EEGSegment, MultiStream1DCNN
+import tensorflow as tf
 
 import threading
 from collections import Counter, deque
@@ -38,14 +36,12 @@ topic = "edf_files"
 qos_level = 0
 keep_alive_interval = 60
 
-# Esempio: usiamo il modello allenato del fold 1
-in_channels = 64
-device = "cpu"
-model_inference = MultiStream1DCNN(in_channels=in_channels, n_classes=3).to(device)
-model_inference.load_state_dict(torch.load("model_fold_1.pth", map_location=device))
-model_inference.eval()
+# Modello TFLite
+interpreter = tf.lite.Interpreter(model_path="model_fold_1.tflite")
+interpreter.allocate_tensors()
 
-mne.set_log_level('WARNING')
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
 # Oggetto Condition() che mi serve per regolare le scritture/letture di predictions tramite 
 # acquisizione e rilascio di un Lock
@@ -155,26 +151,22 @@ def inference(data_matrix, info):
 
     data = epochs.get_data() * 1e6
 
-    data_tensor = torch.tensor(data, dtype=torch.float32)
-    example_segment = EEGSegment(data_tensor)
-    example_loader = DataLoader(example_segment, batch_size=1, shuffle=False)
+    input_data = np.array(data, dtype=np.float32)
 
-    # Predizione
-    with torch.no_grad():
-        for xb, yb in example_loader:
-            xb = xb.to(device)
-            logits = model_inference(xb)
-            # weights rappresenta un array di pesi, i quali rappresentano
-            # il grado di confidenza per ciascuna label
-            weights = logits.tolist()[0]
-            with condition:
-                # aggiorno la matrice di pesi con i nuovi pesi
-                for i in range(3):
-                    weights_matrix[i].append(weights[i])
-                weights_matrix[3].append(0)
-                weights_matrix[4].append(0)
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.invoke()
+    output_data = interpreter.get_tensor(output_details[0]['index'])  # shape: (1, 3)
 
-                condition.notify()
+    weights = output_data[0].tolist()
+
+    with condition:
+        # aggiorno la matrice di pesi con i nuovi pesi
+        for i in range(3):
+            weights_matrix[i].append(weights[i])
+        weights_matrix[3].append(0)
+        weights_matrix[4].append(0)
+
+        condition.notify()
 
 def main():
     # Caricamento file edf solo per produrre l'oggetto di informazioni necessario a ricostruire
