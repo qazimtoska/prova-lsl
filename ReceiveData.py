@@ -159,7 +159,7 @@ def inference(data_matrix, info):
     )
 
     data = epochs.get_data() * 1e6
-    inizio = time.time()
+
     input_data = np.array(data, dtype=np.float32)
 
     interpreter.set_tensor(input_details[0]['index'], input_data)
