@@ -7,6 +7,9 @@ import sys
 import numpy as np
 from enum import Enum
 import json
+import pickle
+import os
+import re
 
 import mne
 import tflite_runtime.interpreter as tflite
@@ -20,6 +23,20 @@ from periphery import Serial
 
 uart1 = Serial("/dev/ttymxc0", 115200)
 
+# Specifica come inviare il comando: seriale (s) o MQTT (m). Default: s
+send_method = None
+
+# Parametri di connessione al broker MQTT
+broker_address = "149.132.176.75"  
+broker_port = 1883
+username = "Wheelchair"
+password = "BCI-Wh33lch41r"
+
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+topic = "/ISLab/BCI/Wheelchair/control"
+qos_level = 0
+keep_alive_interval = 60
+
 # Comandi da inviare all'ESP32 tramite seriale
 FORWARD = "AT+FORWARD={}\n"
 BACKWARD = "AT+BACKWARD={}\n"
@@ -32,20 +49,6 @@ mqtt_command = {
     "command": None,
     "value": 100
 }
-
-# Specifica come inviare il comando: seriale (s) o MQTT (m). Default: s
-send_method = None
-
-# Parametri di connessione al broker MQTT
-broker_address = "broker.emqx.io"  
-broker_port = 1883  
-username = ""  
-password = ""
-
-client = mqtt.Client()
-topic = "edf_files"
-qos_level = 0
-keep_alive_interval = 60
 
 # Modello TFLite
 try:
@@ -196,6 +199,24 @@ def inference(data_matrix, info):
 
         condition.notify()
 
+def save_recording(file_matrix):
+    # N.B. Essendo che il programma viene eseguito con 'sudo', per rimuovere la cartella e le registrazioni occorre eseguire sudo rm -rf recordings 
+    folder = "recordings"
+    os.makedirs(folder, exist_ok=True)
+
+    existing_files = os.listdir(folder)
+    pattern = re.compile(r"data_(\d+)\.pkl")
+    numbers = [int(pattern.match(f).group(1)) for f in existing_files if pattern.match(f)]
+
+    next_number = max(numbers) + 1 if numbers else 0
+    filename = f"data_{next_number:02d}.pkl"
+    file_path = os.path.join(folder, filename)
+
+    with open(file_path, "wb") as file:
+        pickle.dump(file_matrix, file)
+
+    print(f"Registrazione salvata in {file_path}")
+
 def main():
     global send_method
 
@@ -206,6 +227,7 @@ def main():
 
     if send_method == 'm':
         # Connessione al broker MQTT
+        client.username_pw_set(username, password)
         client.connect(broker_address, broker_port, keepalive=keep_alive_interval)
         client.loop_start()
         client.default_qos = qos_level
@@ -232,6 +254,9 @@ def main():
     """
     data_matrix = np.empty((64, 0))
 
+    # Matrice che contiene l'intero flusso di registrazione, il quale sarà salvato nel file data.pkl
+    file_matrix = np.empty((64, 0), dtype=np.float32)
+
     # Consente di leggere dallo stream
     inlet = StreamInlet(streams[0])
 
@@ -248,31 +273,40 @@ def main():
 
         # aggiungo la colonna ottenuta in fondo alla matrice data_matrix
         data_matrix = np.hstack((data_matrix, sample_column))
+        file_matrix = np.hstack((file_matrix, sample_column))
 
         if (len(data_matrix[0]) % 800 == 0): # 800 => 800 * 0.00625 = 5 secondi
             break
 
-    # Mediante questo ciclo raccolgo costantemente nuovi campioni e ogni 0.3 secondi faccio inferenza
-    while True:
-        x = threading.Thread(target=inference, args=(data_matrix,info,))
-        threads.append(x)
-        x.start()
+    try:
+        # Mediante questo ciclo raccolgo costantemente nuovi campioni e ogni 0.3 secondi faccio inferenza
+        while True:
+            x = threading.Thread(target=inference, args=(data_matrix,info,))
+            threads.append(x)
+            x.start()
 
-        # 48 samples corrispondono a 0.3 secondi di segnale
-        for _ in range(48):
-            sample, _ = inlet.pull_sample()
-            sample_column = np.array(sample).reshape(64, 1)
-            data_matrix = np.hstack((data_matrix, sample_column))
+            # 48 samples corrispondono a 0.3 secondi di segnale
+            for _ in range(48):
+                sample, _ = inlet.pull_sample()
+                sample_column = np.array(sample).reshape(64, 1)
+                data_matrix = np.hstack((data_matrix, sample_column))
+                file_matrix = np.hstack((file_matrix, sample_column))
 
-            # Ogni campione ricevuto viene incolonnato alla fine di data_matrix, e per mantenere
-            # la stessa dimensione del segmento (5 secondi) la prima colonna (0) viene rimossa.
-            # Dunque data_matrix è una matrice scorrevole
-            data_matrix = data_matrix[:, 1:]
+                # Ogni campione ricevuto viene incolonnato alla fine di data_matrix, e per mantenere
+                # la stessa dimensione del segmento (5 secondi) la prima colonna (0) viene rimossa.
+                # Dunque data_matrix è una matrice scorrevole
+                data_matrix = data_matrix[:, 1:]
 
-    # Se il programma viene interrotto dall'utente si attende che tutte le predizioni siano 
-    # state effettuate
+    except KeyboardInterrupt:
+        print("\nInterruzione rilevata. Attendo la fine dei thread...")
+    
+    # Se il programma viene interrotto dall'utente si attende che tutte le predizioni siano state effettuate
     for _, thread in enumerate(threads):
         thread.join()
+    
+    save_recording(file_matrix)
+    
+    print("È possibile chiudere il programma.")
 
 if __name__ == '__main__':
     main()
