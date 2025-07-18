@@ -1,10 +1,12 @@
-"""Example program to show how to read a multi-channel time series from LSL."""
+# Pipeline di acquisizione, inferenza e controllo
 
 from pylsl import StreamInlet, resolve_stream
 
 import time
+import sys
 import numpy as np
 from enum import Enum
+import json
 
 import mne
 import tflite_runtime.interpreter as tflite
@@ -18,12 +20,21 @@ from periphery import Serial
 
 uart1 = Serial("/dev/ttymxc0", 115200)
 
-# Comandi da inviare all'ESP32
+# Comandi da inviare all'ESP32 tramite seriale
 FORWARD = "AT+FORWARD={}\n"
-BACK = "AT+BACK={}\n"
+BACKWARD = "AT+BACKWARD={}\n"
 LEFT = "AT+LEFT={}\n"
 RIGHT = "AT+RIGHT={}\n"
-STOP = "AT+STOP={}\n"
+STOP = "AT+STOP\n"
+
+# Schema del comando da inviare all'ESP32 tramite MQTT
+mqtt_command = {
+    "command": None,
+    "value": 100
+}
+
+# Specifica come inviare il comando: seriale (s) o MQTT (m). Default: s
+send_method = None
 
 # Parametri di connessione al broker MQTT
 broker_address = "broker.emqx.io"  
@@ -39,13 +50,13 @@ keep_alive_interval = 60
 # Modello TFLite
 try:
     edgetpu_delegate = tflite.load_delegate('libedgetpu.so.1')
-    print("Using Edge TPU for inference.")
+    print("Verrà utilizzata la TPU per la fase di inferenza.")
     interpreter = tflite.Interpreter(
         model_path="model_edgetpu.tflite",
         experimental_delegates=[edgetpu_delegate]
     )
 except Exception as e:
-    print("Edge TPU delegate not available, falling back to CPU.")
+    print("Edge TPU non disponibile, fallback su CPU")
     interpreter = tflite.Interpreter(model_path="model_edgetpu.tflite")
 
 interpreter.allocate_tensors()
@@ -70,7 +81,7 @@ class Prediction(Enum):
     LEFT = 1
     RIGHT = 2
     FORWARD = 3
-    BACK = 4
+    BACKWARD = 4
 
 def majority_voting():
     """
@@ -81,23 +92,31 @@ def majority_voting():
     global last_prediction
 
     def send_command(prediction):
-        if prediction == Prediction.STOP.value:
-            command = STOP.format(127)
-        elif prediction == Prediction.LEFT.value:
-            command = LEFT.format(127)
-        elif prediction == Prediction.RIGHT.value:
-            command = RIGHT.format(127)
-        elif prediction == Prediction.FORWARD.value:
-            command = FORWARD.format(127)
-        else:
-            command = BACK.format(127)
-
-        # Scrittura comando tramite seriale
-        uart1.write(command.encode('utf-8'))
-        
-        # Invio comando con MQTT
-        result = client.publish(topic, command)
-        result.wait_for_publish()
+        if send_method == 's': # Scrittura su seriale
+            if prediction == Prediction.STOP.value:
+                command = STOP
+            elif prediction == Prediction.LEFT.value:
+                command = LEFT.format(100)
+            elif prediction == Prediction.RIGHT.value:
+                command = RIGHT.format(100)
+            elif prediction == Prediction.FORWARD.value:
+                command = FORWARD.format(100)
+            else:
+                command = BACKWARD.format(100)
+            uart1.write(command.encode('utf-8'))
+        else: # Invio comando con MQTT
+            if prediction == Prediction.STOP.value:
+                mqtt_command["command"] = "STOP"
+            elif prediction == Prediction.LEFT.value:
+                mqtt_command["command"] = "LEFT"
+            elif prediction == Prediction.RIGHT.value:
+                mqtt_command["command"] = "RIGHT"
+            elif prediction == Prediction.FORWARD.value:
+                mqtt_command["command"] = "FORWARD"
+            else:
+                mqtt_command["command"] = "BACKWARD"
+            result = client.publish(topic, json.dumps(mqtt_command))
+            result.wait_for_publish()
 
     while True:
         with condition:
@@ -122,7 +141,7 @@ def majority_voting():
                     elif Prediction.LEFT.value in max_indices:
                         prediction = Prediction.LEFT.value
                     else:
-                        prediction = Prediction.BACK.value
+                        prediction = Prediction.BACKWARD.value
                 else:
                     # Se c'è un pareggio ma è stata già effettuata almeno una predizione,
                     # allora predizione attuale = ultima predizione fatta
@@ -178,19 +197,26 @@ def inference(data_matrix, info):
         condition.notify()
 
 def main():
+    global send_method
+
+    send_method = sys.argv[1] if len(sys.argv) > 1 else 's'
+    if send_method not in ('s', 'm'):
+        print("Invalid argument. Defaulting to 's' = writing to serial.")
+        send_method = 's'
+
+    if send_method == 'm':
+        # Connessione al broker MQTT
+        client.connect(broker_address, broker_port, keepalive=keep_alive_interval)
+        client.loop_start()
+        client.default_qos = qos_level
+
     # Caricamento file edf solo per produrre l'oggetto di informazioni necessario a ricostruire
     # i vari segmenti
     edf_files = mne.datasets.eegbci.load_data(1, [4])
     raw = mne.io.read_raw_edf(edf_files[0], preload=True, stim_channel='auto', verbose=False)
     info = raw.info
 
-    # Connessione al broker MQTT
-    client.connect(broker_address, broker_port, keepalive=keep_alive_interval)
-    client.loop_start()
-    client.default_qos = qos_level
-
-    # first resolve an EEG stream on the lab network
-    print("Looking for an EEG stream...")
+    print("Rilevazione stream EEG...")
     streams = resolve_stream('type', 'EEG')
 
     """
@@ -206,7 +232,7 @@ def main():
     """
     data_matrix = np.empty((64, 0))
 
-    # create a new inlet to read from the stream
+    # Consente di leggere dallo stream
     inlet = StreamInlet(streams[0])
 
     # Lista che mi consente di fare il join dei thread inference
